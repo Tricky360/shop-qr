@@ -155,6 +155,7 @@
   const $ = (id) => document.getElementById(id);
   const home = $('home'), scanner = $('scanner'), message = $('message');
   let qr = null, cameras = [], cameraIndex = 0, running = false, locked = false;
+  let starting = false;
   let currentCameraId = null, torchOn = false, indexRecords = [];
 
   async function loadIndex() {
@@ -222,6 +223,8 @@
   }
 
   async function startCamera(cameraId = null) {
+    if (starting) return;
+    starting = true;
     if (!qr) qr = new Html5Qrcode('reader', { verbose: false });
     $('cameraStatus').textContent = 'Requesting camera permission…';
     $('message').textContent = 'Allow camera access if prompted.';
@@ -278,19 +281,29 @@
       message.textContent = /permission|notallowed/i.test(reason)
         ? 'Camera permission was denied. Allow camera access in your browser settings, then try again.'
         : 'Unable to open the camera. Check that a camera is connected and that this page is served over HTTPS or localhost. (' + reason + ')';
+    } finally {
+      starting = false;
     }
   }
 
   async function stopCamera(clear = true) {
-    if (qr && running) {
-      try { await qr.stop(); } catch (_) {}
-      try { await qr.clear(); } catch (_) {}
+    // IMPORTANT: never call Html5Qrcode.clear() during/after an active scan.
+    // clear() can throw "Cannot clear while scan is ongoing". stop() is
+    // sufficient to release the camera, and the same instance can be reused.
+    if (qr) {
+      try {
+        if (qr.isScanning) await qr.stop();
+      } catch (err) {
+        console.warn('Unable to stop QR camera cleanly:', err);
+      }
     }
-    running = false; torchOn = false;
+    running = false;
+    torchOn = false;
     $('torch').textContent = '☼ Flashlight';
     $('torch').disabled = true;
     $('switchCamera').disabled = true;
-    if (clear) $('reader').innerHTML = '';
+    // Keep the reader element intact; removing its contents can leave the
+    // library's internal scanner state out of sync on the next scan.
   }
 
   async function openScanner() {
@@ -303,6 +316,7 @@
     await startCamera();
   }
   async function closeScanner() {
+    while (starting) await new Promise(resolve => setTimeout(resolve, 100));
     await stopCamera(true);
     scanner.classList.remove('active'); home.style.display = 'flex';
     $('result').classList.remove('show'); locked = false;
